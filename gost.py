@@ -12,9 +12,7 @@ s_box = (
     (1, 15, 13, 0, 5, 7, 10, 4, 9, 2, 3, 14, 6, 11, 8, 12),
 )
 
-BLOCK_SIZE_BITS = 64
-BLOCK_SIZE_BYTES = BLOCK_SIZE_BITS / 8
-KEY_SIZE_BYTES = 32
+BLOCK_SIZE_BYTES = 8
 
 
 def get_num_bits(n):
@@ -23,27 +21,41 @@ def get_num_bits(n):
     return int((math.log(n) / math.log(2)) + 1)
 
 
-def str_to_int(string):
-    if string == '':
+def str_as_int(s):
+    if s == '':
         return 0
-    return int(''.join(format(ord(i), 'd') for i in string))
+    num = 0
+    for i in range(len(s)):
+        num <<= 8
+        num |= ord(s[i])
+    return num
 
 
-def make_block_size(block):
+def int_as_str(num):
+    s = ''
+    mask = 0xff
+    i = 0
+    l = num.bit_length()
+    while i < l:
+        s += chr(num & mask)
+        num >>= 8
+        i += 8
+    s = s[::-1]
+    return s
+
+
+def make_block_string(block):
     if isinstance(block, str):
-        block = str_to_int(block)
+        block_bytes = len(block)
+        needed_bits = int(BLOCK_SIZE_BYTES - block_bytes) * 8
+        return str_as_int(block) << needed_bits
 
-    if isinstance(block, int):
-        block_bits = get_num_bits(block)
-        assert block_bits <= BLOCK_SIZE_BITS, 'Your block size is ' + str(block_bits) + ' bits but mush be ' + str(
-            BLOCK_SIZE_BITS) + ' bits or less'
-        return block << BLOCK_SIZE_BITS - block_bits
-
-    raise ValueError('expected str or int')
+    raise ValueError('expected str')
 
 
 def f(part, key):
     mod32 = 0x100000000
+    # суммирование по модулю 2^32
     part += key
     if part >= mod32:
         part -= mod32
@@ -56,15 +68,10 @@ def f(part, key):
         tmp <<= 4
         res <<= 4
         res |= s_box[i][ind]
-    return ((res >> 11) | (res << (32 - 11))) & 0xffffffff
+    return ((res >> (32 - 11)) | (res << 11)) & 0xffffffff
 
 
 def generate_gamma(block, sub_keys):
-    block_bits = get_num_bits(block)
-    assert block_bits <= BLOCK_SIZE_BITS, 'Your block size is ' + str(
-        block_bits) + ' bits but mush be ' + str(
-        BLOCK_SIZE_BITS) + ' bits or less'
-    block <<= BLOCK_SIZE_BITS - block_bits
     left = block >> 32
     right = block & 0xffffffff
 
@@ -78,11 +85,11 @@ def generate_gamma(block, sub_keys):
 def get_sub_keys(key):
     key_list = []
     sub_keys = []
-    key = int(key)
-    for i in range(8):
-        key_list.insert(0, key & 0xffffffff)
-        sub_keys.append(key_list[0])
-        key >>= 32
+    i = 0
+    while i < 32:
+        key_list.append(str_as_int(key[i: i + 4]))
+        sub_keys.insert(0, key_list[len(key_list) - 1])
+        i += 4
 
     for i in range(0, 24):
         sub_keys.insert(0, key_list[(23 - i) % len(key_list)])
@@ -90,41 +97,29 @@ def get_sub_keys(key):
     return sub_keys
 
 
-def encrypt(source, key, starting_gamma):
+def gost(source, key, iv, operation='enc'):
+    assert len(key) == 32, 'Your key is ' + str(len(key)) + ' bytes but must be 32 bytes'
+    assert len(iv) == 8, 'iv must be 8 bytes'
+    assert operation == 'enc' or operation == 'dec', 'Unsupported operation: ' + operation
+
     sub_keys = get_sub_keys(key)
-    gamma = int(starting_gamma)
-    encrypted = ''
+    # if operation == 'dec':
+    #     sub_keys.reverse()
+
+    crypted = 0
     i = 0
 
-    source_as_bits = ''.join(format(ord(i), 'b') for i in source)
-    print('source_as_bits: ' + source_as_bits)
-
-    # source_bits = get_num_bits(int((''.join(format(ord(i), 'd') for i in source))))
-    #
-    # print('source_bits: ' + str(source_bits))
-    # print('len(source_as_bits): ' + str(len(source_as_bits)))
-
-    gamma = generate_gamma(gamma, sub_keys)
-    gamma |= make_block_size(source[i:min(i + BLOCK_SIZE_BITS, source_bits)])
-    encrypted += str(gamma)
-    i += BLOCK_SIZE_BITS
-    while i < source_bits:
+    gamma = generate_gamma(str_as_int(iv), sub_keys)
+    gamma ^= make_block_string(source[i:min(i + 8, len(source))])
+    crypted |= gamma
+    i += 8
+    while i < len(source):
         gamma = generate_gamma(gamma, sub_keys)
-        gamma |= make_block_size(source[i:min(i + BLOCK_SIZE_BITS, source_bits)])
-        print('i: ' + str(i))
-        print('i+BLOCK_SIZE: ' + str(i + BLOCK_SIZE_BITS))
-        print("current block: '" + source[i:min(i + BLOCK_SIZE_BITS, source_bits)] + "'")
-        print("current block as int: '" + str(str_to_int(source[i:min(i + BLOCK_SIZE_BITS, source_bits)])) + "'")
-        print("current block size in bits: " + str(get_num_bits(str_to_int(source[i:min(i + BLOCK_SIZE_BITS, source_bits)]))))
-        print("current block fitted: " + str(make_block_size(source[i:min(i + BLOCK_SIZE_BITS, source_bits)])))
-        print("current block fitted size in bits: " + str(get_num_bits(make_block_size(source[i:min(i + BLOCK_SIZE_BITS, source_bits)]))))
-        print(make_block_size(source[i:min(i + BLOCK_SIZE_BITS, source_bits)]))
-        print(str_to_int(source[i:min(i + BLOCK_SIZE_BITS, source_bits)]))
-        encrypted += str(gamma)
-        i += BLOCK_SIZE_BITS
+        gamma ^= make_block_string(source[i:min(i + 8, len(source))])
+        crypted <<= 64
+        crypted |= gamma
+        i += 8
 
-    return gamma
-
-
-def decrypt():
-    print('decrypt')
+    print(int_as_str(crypted))
+    print(crypted)
+    return int_as_str(crypted)
